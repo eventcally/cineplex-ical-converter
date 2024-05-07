@@ -84,6 +84,11 @@ def index():
         desc_items = list()
         sorted_movies_at_day = sorted(movies_at_day.values(), key=lambda d: d["name"])
 
+        if len(sorted_movies_at_day) > 1:
+            movie_names = [m["name"] for m in sorted_movies_at_day]
+            desc_items.append(" | ".join(movie_names))
+            desc_items.append("")
+
         for movie in sorted_movies_at_day:
             desc_items.append(movie["name"])
             desc_items.append(" ".join(sorted(movie["times"])))
