@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timedelta
 from urllib.request import Request, urlopen
@@ -10,47 +11,61 @@ from flask import Response, request
 from project import app
 
 
+def fetch(url):
+    req = Request(url)
+    return urlopen(req).read()
+
+
+def get_cinema_id(city):
+    kino_de_url = f"https://www.kino.de/kinoprogramm/stadt/{city}/kino/cineplex-{city}/"
+    doc = BeautifulSoup(fetch(kino_de_url), "html.parser")
+    widget = doc.find(attrs={"data-role": "alice-cinema-widget"})
+    return widget["data-cinema-id"]
+
+
 @app.route("/")
 def index():
     city = request.args.get("city", "goslar")
-    url = f"https://www.cineplex.de/programm/{city}/"
+    url = f"https://www.cineplex.de/{city}/programm"
 
-    req = Request(url)
-    response = urlopen(req)
-    doc = BeautifulSoup(response.read(), "html.parser")
+    cinema_id = get_cinema_id(city)
+    schedule = json.loads(
+        fetch(f"https://kntkapi.apps.stroeermb.de/api/cinema/{cinema_id}/")
+    )
+
+    movie_titles = {movie["id"]: movie["title"] for movie in schedule["movies"]}
+
+    berlin_tz = pytz.timezone("Europe/Berlin")
 
     days = dict()
 
-    movies = doc.find_all("div", class_="movie-schedule")
-    for movie in movies:
-        film_info_link = movie.find("a", class_="filmInfoLink")
-        location_header = movie.find("h4", class_="schedule__grid-site")
+    for showtime in schedule["showtimes"]:
+        movie_id = showtime["movie"]["id"]
+        film_name = movie_titles.get(movie_id)
 
-        if not film_info_link or not location_header:
+        if not film_name:
             continue
 
-        film_name = film_info_link.text
-        film_url = "https://www.cineplex.de" + film_info_link["href"]
+        showtime_local = (
+            datetime.strptime(showtime["showtime"], "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=pytz.utc)
+            .astimezone(berlin_tz)
+        )
+        date_str = showtime_local.strftime("%Y-%m-%d")
+        time_str = showtime_local.strftime("%H:%M")
 
-        times = movie.find_all("time", class_="schedule__time")
-        for time in times:
-            date_str = time["datetime"]
-            time_str = time.text
+        movies_at_day = days.setdefault(date_str, dict())
 
-            movies_at_day = days.setdefault(date_str, dict())
+        if movie_id in movies_at_day:
+            movie_at_day = movies_at_day[movie_id]
+        else:
+            movie_at_day = {
+                "name": film_name,
+                "times": set(),
+            }
+            movies_at_day[movie_id] = movie_at_day
+        movie_at_day["times"].add(time_str)
 
-            if film_url in movies_at_day:
-                movie_at_day = movies_at_day[film_url]
-            else:
-                movie_at_day = {
-                    "name": film_name,
-                    "url": film_url,
-                    "times": set(),
-                }
-                movies_at_day[film_url] = movie_at_day
-            movie_at_day["times"].add(time_str)
-
-    berlin_tz = pytz.timezone("Europe/Berlin")
     cal = icalendar.Calendar()
     cal.add("prodid", "-//eventcally//github.com/eventcally/cineplex-ical-converter//")
     cal.add("version", "2.0")
@@ -92,7 +107,6 @@ def index():
         for movie in sorted_movies_at_day:
             desc_items.append(movie["name"])
             desc_items.append(" ".join(sorted(movie["times"])))
-            desc_items.append(movie["url"])
             desc_items.append("")
 
         ical_event = icalendar.Event()
